@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -422,6 +423,30 @@
     margin-bottom: 6px;
     box-sizing: border-box;
   }
+  .password-field {
+    position: relative;
+  }
+  .password-field .admin-input {
+    padding-right: 40px;
+  }
+  .eye-toggle {
+    position: absolute;
+    right: 8px;
+    top: 8px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 4px;
+    line-height: 1;
+    color: var(--muted);
+  }
+  .reset-note {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 14px;
+    line-height: 1.5;
+  }
   .admin-error {
     color: var(--accent);
     font-size: 12px;
@@ -514,6 +539,34 @@
     margin-top: 8px;
   }
 </style>
+  <script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getAuth, signInWithEmailAndPassword, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBFxIFfgtTYT8vb42rPIQ-eJClzm73xttw",
+    authDomain: "freshmeat-6bfd0.firebaseapp.com",
+    projectId: "freshmeat-6bfd0",
+    storageBucket: "freshmeat-6bfd0.firebasestorage.app",
+    messagingSenderId: "329301869183",
+    appId: "1:329301869183:web:5145e6b73cc5a85e85b54a"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+
+  const ADMIN_EMAIL = "muraliit11@gmail.com";
+
+  window.firebaseAdminSignIn = async function (enteredPassword) {
+    return signInWithEmailAndPassword(auth, ADMIN_EMAIL, enteredPassword);
+  };
+
+  window.firebaseSendPasswordReset = async function () {
+    return sendPasswordResetEmail(auth, ADMIN_EMAIL);
+  };
+
+  window.ADMIN_EMAIL_DISPLAY = ADMIN_EMAIL;
+</script>
 </head>
 <body>
 
@@ -582,37 +635,29 @@
 <div class="admin-modal" id="admin-modal">
   <div class="admin-box">
     <h3>Enter admin password</h3>
-    <input type="password" class="admin-input" id="admin-password-input" placeholder="Password" />
+    <div class="password-field">
+      <input type="password" class="admin-input" id="admin-password-input" placeholder="Password" />
+      <button type="button" class="eye-toggle" onclick="togglePasswordVisibility('admin-password-input', this)">👁️</button>
+    </div>
     <div class="admin-error" id="admin-error"></div>
     <button class="done-btn" onclick="submitAdminPassword()">Unlock</button>
     <button class="cancel-btn" onclick="closeAdminModal()">Cancel</button>
-    <button class="forgot-link" onclick="startOtpReset()">Forgot password? Reset via mobile OTP</button>
+    <button class="forgot-link" onclick="startPasswordReset()">Forgot password? Reset via email</button>
   </div>
 </div>
 
-<div class="admin-modal" id="otp-modal">
-  <div class="admin-box" id="otp-step-request">
+<div class="admin-modal" id="reset-modal">
+  <div class="admin-box" id="reset-step-confirm">
     <h3>Reset admin password</h3>
-    <div class="otp-note">A one-time code will be sent to the creator's registered mobile number ending in <span id="otp-mobile-mask"></span>.</div>
-    <button class="done-btn" onclick="sendOtp()">Send OTP</button>
-    <button class="cancel-btn" onclick="closeOtpModal()">Cancel</button>
+    <div class="reset-note">We'll send a password reset link to the admin email on file (<span id="reset-email-mask"></span>). Open it on this device to set a new password, then come back and unlock with it.</div>
+    <div class="admin-error" id="reset-error"></div>
+    <button class="done-btn" onclick="sendPasswordReset()">Send reset email</button>
+    <button class="cancel-btn" onclick="closeResetModal()">Cancel</button>
   </div>
-  <div class="admin-box" id="otp-step-verify" style="display:none;">
-    <h3>Enter OTP</h3>
-    <div class="otp-note" id="otp-sent-note"></div>
-    <input type="text" inputmode="numeric" maxlength="6" class="admin-input" id="otp-input" placeholder="6-digit code" />
-    <div class="admin-error" id="otp-error"></div>
-    <button class="done-btn" onclick="verifyOtp()">Verify</button>
-    <button class="cancel-btn" onclick="sendOtp()">Resend code</button>
-    <button class="cancel-btn" onclick="closeOtpModal()">Cancel</button>
-  </div>
-  <div class="admin-box" id="otp-step-newpass" style="display:none;">
-    <h3>Set new password</h3>
-    <input type="password" class="admin-input" id="new-admin-password" placeholder="New password" />
-    <input type="password" class="admin-input" id="confirm-admin-password" placeholder="Confirm new password" style="margin-top:8px;" />
-    <div class="admin-error" id="newpass-error"></div>
-    <button class="done-btn" onclick="submitNewPassword()">Save new password</button>
-    <button class="cancel-btn" onclick="closeOtpModal()">Cancel</button>
+  <div class="admin-box" id="reset-step-sent" style="display:none;">
+    <h3>Check your email</h3>
+    <div class="reset-note">A reset link was sent to <span id="reset-email-sent"></span>. Follow it to set a new password, then unlock Admin here with the new one.</div>
+    <button class="done-btn" onclick="closeResetModal()">Done</button>
   </div>
 </div>
 </div>
@@ -798,9 +843,10 @@
     document.getElementById("admin-modal").classList.remove("open");
   }
 
-  function submitAdminPassword() {
+  async function submitAdminPassword() {
     const entered = document.getElementById("admin-password-input").value;
-    if (entered === ADMIN_PASSWORD) {
+    try {
+      await window.firebaseAdminSignIn(entered);
       adminUnlocked = true;
       document.getElementById("admin-btn").textContent = "🔓 Admin";
       document.getElementById("admin-btn").classList.add("unlocked");
@@ -808,74 +854,47 @@
       document.getElementById("restore-btn").style.display = "inline-block";
       renderGrid();
       closeAdminModal();
-    } else {
+    } catch (err) {
       document.getElementById("admin-error").textContent = "Incorrect password. Try again.";
     }
   }
 
-  // --- Forgot password: OTP reset flow (simulated OTP, no real SMS sent) ---
-  let pendingOtp = null;
-
-  function maskMobile(number) {
-    return number.slice(-4);
-  }
-
-  function showOtpStep(step) {
-    document.getElementById("otp-step-request").style.display = step === "request" ? "block" : "none";
-    document.getElementById("otp-step-verify").style.display = step === "verify" ? "block" : "none";
-    document.getElementById("otp-step-newpass").style.display = step === "newpass" ? "block" : "none";
-  }
-
-  function startOtpReset() {
-    closeAdminModal();
-    document.getElementById("otp-mobile-mask").textContent = maskMobile(CREATOR_MOBILE);
-    showOtpStep("request");
-    document.getElementById("otp-modal").classList.add("open");
-  }
-
-  function closeOtpModal() {
-    document.getElementById("otp-modal").classList.remove("open");
-    pendingOtp = null;
-  }
-
-  function sendOtp() {
-    pendingOtp = String(Math.floor(100000 + Math.random() * 900000));
-    document.getElementById("otp-input").value = "";
-    document.getElementById("otp-error").textContent = "";
-    document.getElementById("otp-sent-note").innerHTML =
-      `Code sent to mobile ending in ${maskMobile(CREATOR_MOBILE)}.<br/>` +
-      `<strong>Demo code (no real SMS is sent): ${pendingOtp}</strong>`;
-    showOtpStep("verify");
-    // Simulated send — no real SMS provider connected, so the code is shown here for testing.
-  }
-
-  function verifyOtp() {
-    const entered = document.getElementById("otp-input").value.trim();
-    if (entered === pendingOtp) {
-      document.getElementById("new-admin-password").value = "";
-      document.getElementById("confirm-admin-password").value = "";
-      document.getElementById("newpass-error").textContent = "";
-      showOtpStep("newpass");
+  // --- Show/hide password toggle (used on admin login field) ---
+  function togglePasswordVisibility(inputId, btn) {
+    const input = document.getElementById(inputId);
+    if (input.type === "password") {
+      input.type = "text";
+      btn.textContent = "🙈";
     } else {
-      document.getElementById("otp-error").textContent = "Incorrect code. Try again or resend.";
+      input.type = "password";
+      btn.textContent = "👁️";
     }
   }
 
-  function submitNewPassword() {
-    const pass1 = document.getElementById("new-admin-password").value;
-    const pass2 = document.getElementById("confirm-admin-password").value;
-    if (!pass1 || pass1.length < 4) {
-      document.getElementById("newpass-error").textContent = "Password must be at least 4 characters.";
-      return;
+  // --- Forgot password: real Firebase email reset link ---
+  function startPasswordReset() {
+    closeAdminModal();
+    const email = window.ADMIN_EMAIL_DISPLAY || "";
+    document.getElementById("reset-email-mask").textContent = email;
+    document.getElementById("reset-error").textContent = "";
+    document.getElementById("reset-step-confirm").style.display = "block";
+    document.getElementById("reset-step-sent").style.display = "none";
+    document.getElementById("reset-modal").classList.add("open");
+  }
+
+  function closeResetModal() {
+    document.getElementById("reset-modal").classList.remove("open");
+  }
+
+  async function sendPasswordReset() {
+    try {
+      await window.firebaseSendPasswordReset();
+      document.getElementById("reset-email-sent").textContent = window.ADMIN_EMAIL_DISPLAY || "";
+      document.getElementById("reset-step-confirm").style.display = "none";
+      document.getElementById("reset-step-sent").style.display = "block";
+    } catch (err) {
+      document.getElementById("reset-error").textContent = "Couldn't send reset email. Try again shortly.";
     }
-    if (pass1 !== pass2) {
-      document.getElementById("newpass-error").textContent = "Passwords don't match.";
-      return;
-    }
-    ADMIN_PASSWORD = pass1;
-    saveState();
-    closeOtpModal();
-    showToast("Password reset. Use it next time you unlock Admin.");
   }
 
   function showToast(msg) {
