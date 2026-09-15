@@ -13,7 +13,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebas
 import { getAuth, RecaptchaVerifier, signInWithPhoneNumber } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
 import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
 
-const app = initializeApp(firebaseConfig);
+const app = initializeApp(firebaseConfig, "freshmeatPaywallApp");
 const auth = getAuth(app);
 const db = getFirestore(app);
 
