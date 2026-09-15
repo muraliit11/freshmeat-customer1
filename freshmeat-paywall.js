@@ -18,7 +18,7 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 // ---- Trial & Paywall Logic (Phone-verified, Firestore-backed) ----
-// TESTING MODE: 5-minute trial for customer1 only. Switch back to
+// TESTING MODE: 30-minute trial for customer1 only. Switch back to
 // TRIAL_HOURS = 2 (and revert isAccessAllowed + the verified-message text
 // below) once testing is done.
 const TRIAL_MINUTES = 30;
