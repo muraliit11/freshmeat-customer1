@@ -21,7 +21,7 @@ const db = getFirestore(app);
 // TESTING MODE: 5-minute trial for customer1 only. Switch back to
 // TRIAL_HOURS = 2 (and revert isAccessAllowed + the verified-message text
 // below) once testing is done.
-const TRIAL_MINUTES = 5;
+const TRIAL_MINUTES = 30;
 const PLATFORM_UPI_ID = "9940491206@upi"; // platform owner's UPI ID — access-fee payments always go here, same across all customer deployments, do not change per customer
 
 // Access-fee tiers. All paid to PLATFORM_UPI_ID (this is the platform's own
