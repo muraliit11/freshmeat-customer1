@@ -1,9 +1,11 @@
 
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Porur FreshMeat Shop</title>
+<title>T.Nagar FreshMeat Shop</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
@@ -270,6 +272,27 @@
     padding: 1px 0;
   }
   .bill-meta .row span:last-child { color: var(--ink); font-weight: 600; }
+  /* Printable invoice: hidden on screen, shown only in the print dialog
+     (which also offers "Save as PDF" when no printer is connected). */
+  #print-invoice { display: none; }
+  @media print {
+    body > *:not(#print-invoice) { display: none !important; }
+    #print-invoice {
+      display: block !important;
+      position: static;
+      width: 100%;
+      padding: 24px;
+      font-family: Arial, sans-serif;
+      color: #000;
+    }
+    #print-invoice h2 { text-align: center; margin: 0 0 4px; }
+    #print-invoice .pi-address { text-align: center; font-size: 12px; margin-bottom: 12px; }
+    #print-invoice .pi-row { display: flex; justify-content: space-between; font-size: 13px; margin: 2px 0; }
+    #print-invoice table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    #print-invoice th, #print-invoice td { border-bottom: 1px solid #ccc; text-align: left; padding: 4px 6px; font-size: 13px; }
+    #print-invoice th:last-child, #print-invoice td:last-child { text-align: right; }
+    #print-invoice .pi-total { text-align: right; font-weight: 700; font-size: 15px; margin-top: 10px; }
+  }
   .history-link {
     width: 100%;
     background: none;
@@ -538,10 +561,21 @@
     min-height: 16px;
     margin-top: 8px;
   }
+  .reset-checkbox-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 12px;
+    text-align: left;
+  }
+  .reset-checkbox-row input { margin-top: 2px; }
 </style>
-  <script type="module">
+ <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
   import { getAuth, signInWithEmailAndPassword, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+  import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyBFxIFfgtTYT8vb42rPIQ-eJClzm73xttw",
@@ -554,8 +588,11 @@
 
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
+  const db = getFirestore(app);
 
-  const ADMIN_EMAIL = "muraliit11@gmail.com";
+  const ADMIN_EMAIL = "customer4@freshmeat.local";
+  const SHOP_ID = "customer4"; // unique per customer deployment — change this for customer1/2/3 later
+  window.SHOP_ID = SHOP_ID; // exposed for freshmeat-paywall.js so trials are scoped per shop
 
   window.firebaseAdminSignIn = async function (enteredPassword) {
     return signInWithEmailAndPassword(auth, ADMIN_EMAIL, enteredPassword);
@@ -566,7 +603,20 @@
   };
 
   window.ADMIN_EMAIL_DISPLAY = ADMIN_EMAIL;
+
+  // ---- Shared product catalog (Firestore-backed — every visitor sees the same live prices) ----
+  window.fetchSharedProducts = async function () {
+    const ref = doc(db, "shopProducts", SHOP_ID);
+    const snap = await getDoc(ref);
+    return snap.exists() ? snap.data() : null;
+  };
+
+  window.saveSharedProducts = async function (productsArray, nextAddedAtValue) {
+    const ref = doc(db, "shopProducts", SHOP_ID);
+    await setDoc(ref, { products: productsArray, nextAddedAt: nextAddedAtValue, updatedAt: Date.now() });
+  };
 </script>
+<script type="module" src="freshmeat-paywall.js"></script>
 </head>
 <body>
 
@@ -574,12 +624,13 @@
   <div class="header-inner">
     <div class="logo">
       <span style="font-size:22px;">🥩</span>
-      <span class="name">Porur FreshMeat Shop</span>
+      <span class="name">T.Nagar FreshMeat Shop</span>
       <span class="tag">· pay by UPI</span>
     </div>
     <div style="display:flex; align-items:center;">
       <button class="admin-btn" id="export-btn" onclick="exportToExcel()" style="display:none;">⬇️ Export</button>
       <button class="admin-btn" id="restore-btn" onclick="document.getElementById('restore-file-input').click()" style="display:none;">⬆️ Restore</button>
+      <button class="admin-btn" id="reset-invoice-btn" onclick="openInvoiceResetModal()" style="display:none;">🗑️ Reset Invoices</button>
       <input type="file" id="restore-file-input" accept=".xlsx" style="display:none;" onchange="handleRestoreFile(event)" />
       <button class="admin-btn" id="admin-btn" onclick="toggleAdmin()">🔒 Admin</button>
       <div class="cart-pill" onclick="openDrawer()">
@@ -621,14 +672,23 @@
     <div class="pay-amount" id="pay-amount">₹0</div>
     <div class="pay-invoice-line" id="pay-invoice-no"></div>
     <div id="qr-holder"></div>
-    <div class="payee">Murali S</div>
+    <div class="payee" id="payee-name"></div>
     <div class="upi-row">
-      <span id="upi-id-text">muraliit11@okhdfcbank</span>
+      <span id="upi-id-text"></span>
       <button class="copy-btn" onclick="copyUpi()">Copy</button>
     </div>
-    <div class="bank-line">HDFC Bank 8037</div>
+    <div class="bank-line" id="bank-line-text">HDFC Bank 2828</div>
     <button class="done-btn" onclick="markPaid()">I've paid</button>
     <button class="cancel-btn" onclick="closePayModal()">Cancel</button>
+  </div>
+</div>
+
+<div class="pay-modal" id="delivery-modal">
+  <div class="pay-box">
+    <h3>Payment confirmed 🎉</h3>
+    <div style="color:var(--muted); font-size:14px; margin:6px 0 20px;">How would you like your order?</div>
+    <button class="done-btn" onclick="chooseDelivery('Hand Carry')">Hand Carry</button>
+    <button class="done-btn" onclick="chooseDelivery('Courier')">Courier</button>
   </div>
 </div>
 
@@ -660,6 +720,26 @@
     <button class="done-btn" onclick="closeResetModal()">Done</button>
   </div>
 </div>
+
+<div class="admin-modal" id="invoice-reset-modal">
+  <div class="admin-box">
+    <h3>⚠️ Reset Invoice Data</h3>
+    <div class="reset-note">
+      This will permanently erase all bill history and reset the invoice number back to 001. <strong>This cannot be undone.</strong><br><br>
+      Please export a backup (⬇️ Export) first, or make sure you've saved a copy via email/WhatsApp/mobile — you will not be able to recover this data afterward.
+    </div>
+    <label class="reset-checkbox-row">
+      <input type="checkbox" id="reset-backup-confirm" />
+      <span>I have taken a backup and understand this cannot be undone.</span>
+    </label>
+    <div class="password-field">
+      <input type="password" class="admin-input" id="reset-confirm-password" placeholder="Re-enter admin password" />
+      <button type="button" class="eye-toggle" onclick="togglePasswordVisibility('reset-confirm-password', this)">👁️</button>
+    </div>
+    <div class="admin-error" id="invoice-reset-error"></div>
+    <button class="done-btn" onclick="confirmInvoiceReset()" style="background:var(--accent);">Reset Invoice Data</button>
+    <button class="cancel-btn" onclick="closeInvoiceResetModal()">Cancel</button>
+  </div>
 </div>
 
 <div class="history-modal" id="history-modal">
@@ -692,40 +772,37 @@
 
 <script>
   const PRODUCTS = [
-    { id: "eggs", name: "Eggs", unit: "per dozen", price: 90, emoji: "🥚", addedAt: 1 },
-    { id: "chicken", name: "Chicken", unit: "per kg", price: 220, emoji: "🍗", addedAt: 2 },
-    { id: "mutton", name: "Mutton", unit: "per kg", price: 720, emoji: "🍖", addedAt: 3 },
-    { id: "fish", name: "Rohu Fish", unit: "per kg", price: 260, emoji: "🐟", addedAt: 7 },
-    { id: "prawns", name: "Prawns", unit: "per kg", price: 480, emoji: "🦐", addedAt: 12 },
-    { id: "crab", name: "Crab", unit: "per kg", price: 420, emoji: "🦀", addedAt: 11 },
-    { id: "pomfret", name: "Pomfret", unit: "per kg", price: 650, emoji: "🐠", addedAt: 9 },
-    { id: "duck", name: "Duck", unit: "per kg", price: 380, emoji: "🦆", addedAt: 6 },
-    { id: "liver", name: "Chicken Liver", unit: "per 500g", price: 110, emoji: "🍗", addedAt: 15 },
-    { id: "bacon", name: "Bacon", unit: "per 250g", price: 190, emoji: "🥓", addedAt: 16 },
-    { id: "sausage", name: "Sausages", unit: "per pack", price: 160, emoji: "🌭", addedAt: 17 },
-    { id: "squid", name: "Squid", unit: "per kg", price: 340, emoji: "🦑", addedAt: 10 },
-    { id: "pork", name: "Pork", unit: "per kg", price: 380, emoji: "🐖", addedAt: 4 },
-    { id: "rabbit", name: "Rabbit", unit: "per kg", price: 450, emoji: "🐇", addedAt: 5 },
-    { id: "fish-head", name: "Fish Head", unit: "per piece", price: 90, emoji: "🐟", addedAt: 8 },
-    { id: "lobster-small", name: "Lobster (small)", unit: "per piece", price: 550, emoji: "🦞", addedAt: 14 },
-    { id: "tiger-prawns", name: "Tiger Prawns", unit: "per kg", price: 650, emoji: "🦐", addedAt: 13 },
+    { id: "eggs", name: "Eggs", unit: "per piece", price: 6, emoji: "🥚", addedAt: 1 },
+    { id: "chicken", name: "Chicken", unit: "per piece", price: 9, emoji: "🍗", addedAt: 2 },
+    { id: "mutton", name: "Mutton", unit: "per kg", price: 14, emoji: "🍖", addedAt: 3 },
+    { id: "fish", name: "Rohu Fish", unit: "per kg", price: 26, emoji: "🐟", addedAt: 7 },
+    { id: "prawns", name: "Prawns", unit: "per kg", price: 48, emoji: "🦐", addedAt: 12 },
+    { id: "crab", name: "Crab", unit: "per kg", price: 42, emoji: "🦀", addedAt: 11 },
+    { id: "pomfret", name: "Pomfret", unit: "per kg", price: 65, emoji: "🐠", addedAt: 9 },
+    { id: "duck", name: "Duck", unit: "per kg", price: 38, emoji: "🦆", addedAt: 6 },
+    { id: "liver", name: "Chicken Liver", unit: "per 500g", price: 11, emoji: "🍗", addedAt: 15 },
+    { id: "bacon", name: "Bacon", unit: "per 250g", price: 19, emoji: "🥓", addedAt: 16 },
+    { id: "sausage", name: "Sausages", unit: "per pack", price: 16, emoji: "🌭", addedAt: 17 },
+    { id: "squid", name: "Squid", unit: "per kg", price: 34, emoji: "🦑", addedAt: 10 },
+    { id: "pork", name: "Pork", unit: "per kg", price: 29, emoji: "🐖", addedAt: 4 },
+    { id: "rabbit", name: "Rabbit", unit: "per kg", price: 45, emoji: "🐇", addedAt: 5 },
+    { id: "fish-head", name: "Fish Head", unit: "per piece", price: 9, emoji: "🐟", addedAt: 8 },
+    { id: "lobster-small", name: "Lobster (small)", unit: "per piece", price: 55, emoji: "🦞", addedAt: 14 },
+    { id: "tiger-prawns", name: "Tiger Prawns", unit: "per kg", price: 65, emoji: "🦐", addedAt: 13 },
   ];
 
-  const UPI_ID = "muraliit11@okhdfcbank";
-  const UPI_NAME = "Murali S";
-   const SHOP_NAME = "Porur FreshMeat Shop";
-    const SHOP_ADDRESS = "11, Porur Main Road, Chennai";
-    const SHOP_MOBILE = "9940491206";
+  const UPI_ID = "sumathi17f@okhdfcbank";
+  const UPI_NAME = "Sumathi Murali";
+   const SHOP_NAME = "T.Nagar FreshMeat Shop";
+    const SHOP_ADDRESS = "138,South Boag Rd,Vidayaram St,T.Nagar, Chennai";
+    const SHOP_MOBILE = "9600169027";
 
-  // Change this to set your own admin password for editing prices
-  let ADMIN_PASSWORD = "admin123";
-  // Set this to the creator's real mobile number for OTP reset (edit this line)
-  const CREATOR_MOBILE = "9940491206";
   let adminUnlocked = false;
   let nextAddedAt = Math.max(...PRODUCTS.map((p) => p.addedAt)) + 1;
   let invoiceCounter = 1;
   let currentInvoice = null;
   let billHistory = [];
+  let pendingDeliveryBill = null; // the bill entry awaiting a Hand Carry / Courier choice
 
   // --- Persistence (localStorage: automatic, survives refresh on this browser) ---
   const STORAGE_KEY = "freshmeat-state-v1";
@@ -737,7 +814,6 @@
         nextAddedAt,
         billHistory,
         invoiceCounter,
-        adminPassword: ADMIN_PASSWORD,
         cart,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -746,26 +822,20 @@
     }
   }
 
-  function loadState() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const state = JSON.parse(raw);
-      if (Array.isArray(state.products) && state.products.length) {
-        PRODUCTS.length = 0;
-        state.products.forEach((p) => PRODUCTS.push(p));
-      }
-      if (typeof state.nextAddedAt === "number") nextAddedAt = state.nextAddedAt;
-      if (Array.isArray(state.billHistory)) billHistory = state.billHistory;
-      if (typeof state.invoiceCounter === "number") invoiceCounter = state.invoiceCounter;
-      if (typeof state.adminPassword === "string") ADMIN_PASSWORD = state.adminPassword;
-      if (state.cart && typeof state.cart === "object") {
-        Object.keys(state.cart).forEach((id) => { cart[id] = state.cart[id]; });
-      }
-    } catch (e) {
-      console.warn("Could not load saved state:", e);
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const state = JSON.parse(raw);
+    if (Array.isArray(state.billHistory)) billHistory = state.billHistory;
+    if (typeof state.invoiceCounter === "number") invoiceCounter = state.invoiceCounter;
+    if (state.cart && typeof state.cart === "object") {
+      Object.keys(state.cart).forEach((id) => { cart[id] = state.cart[id]; });
     }
+  } catch (e) {
+    console.warn("Could not load saved state:", e);
   }
+}
 
   function formatDateTime(d) {
     const date = d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
@@ -830,6 +900,7 @@
       document.getElementById("admin-btn").classList.remove("unlocked");
       document.getElementById("export-btn").style.display = "none";
       document.getElementById("restore-btn").style.display = "none";
+      document.getElementById("reset-invoice-btn").style.display = "none";
       renderGrid();
       return;
     }
@@ -852,6 +923,7 @@
       document.getElementById("admin-btn").classList.add("unlocked");
       document.getElementById("export-btn").style.display = "inline-block";
       document.getElementById("restore-btn").style.display = "inline-block";
+      document.getElementById("reset-invoice-btn").style.display = "inline-block";
       renderGrid();
       closeAdminModal();
     } catch (err) {
@@ -894,6 +966,43 @@
       document.getElementById("reset-step-sent").style.display = "block";
     } catch (err) {
       document.getElementById("reset-error").textContent = "Couldn't send reset email. Try again shortly.";
+    }
+  }
+
+  // --- Invoice/bill-history reset (double-confirm: backup checkbox + re-entered password) ---
+  function openInvoiceResetModal() {
+    document.getElementById("reset-backup-confirm").checked = false;
+    document.getElementById("reset-confirm-password").value = "";
+    document.getElementById("invoice-reset-error").textContent = "";
+    document.getElementById("invoice-reset-modal").classList.add("open");
+  }
+
+  function closeInvoiceResetModal() {
+    document.getElementById("invoice-reset-modal").classList.remove("open");
+  }
+
+  async function confirmInvoiceReset() {
+    const backedUp = document.getElementById("reset-backup-confirm").checked;
+    const entered = document.getElementById("reset-confirm-password").value;
+    if (!backedUp) {
+      document.getElementById("invoice-reset-error").textContent = "Please confirm you've taken a backup first.";
+      return;
+    }
+    if (!entered) {
+      document.getElementById("invoice-reset-error").textContent = "Please re-enter your admin password.";
+      return;
+    }
+    try {
+      await window.firebaseAdminSignIn(entered);
+      billHistory = [];
+      invoiceCounter = 1;
+      currentInvoice = null;
+      saveState();
+      renderDrawer();
+      closeInvoiceResetModal();
+      showToast("Invoice history reset. Numbering restarts at 001.");
+    } catch (err) {
+      document.getElementById("invoice-reset-error").textContent = "Incorrect password.";
     }
   }
 
@@ -981,7 +1090,7 @@
     renderPriceBlock(id);
     // Keep the cart in sync with the updated name/unit/price
     if (cart[id]) renderDrawer();
-    saveState();
+    persistProducts();
     showToast("Item updated.");
   }
 
@@ -1051,11 +1160,30 @@
     document.getElementById("overlay").classList.remove("open");
   }
 
-  function openPayModal() {
+  // --- Paywall guard: called before opening the pay modal AND before
+  // recording payment. If the phone's trial/access has expired, this shows
+  // the paywall overlay (via freshmeat-paywall.js) and returns false so the
+  // caller aborts — this is what actually blocks checkout, not just the
+  // overlay's own periodic display.
+  async function paywallAllows() {
+    if (typeof window.fmCheckAccessBlocking !== "function") {
+      // Paywall script not loaded/ready — fail safe by allowing, so a
+      // transient load hiccup doesn't lock out a legitimately-paid customer.
+      return true;
+    }
+    return window.fmCheckAccessBlocking();
+  }
+
+  async function openPayModal() {
     const total = totalAmount();
     if (total === 0) return;
+    if (!(await paywallAllows())) {
+      return; // trial/access expired — paywall shown instead, checkout aborted
+    }
     document.getElementById("pay-amount").textContent = "₹" + total;
     document.getElementById("pay-invoice-no").textContent = currentInvoice ? currentInvoice.no : "";
+    document.getElementById("payee-name").textContent = UPI_NAME;
+    document.getElementById("upi-id-text").textContent = UPI_ID;
     const upiUrl = `upi://pay?pa=${encodeURIComponent(UPI_ID)}&pn=${encodeURIComponent(UPI_NAME)}&am=${total}&cu=INR&tn=${encodeURIComponent(currentInvoice ? currentInvoice.no : "")}`;
     const holder = document.getElementById("qr-holder");
     holder.innerHTML = "";
@@ -1071,20 +1199,29 @@
   function closePayModal() {
     document.getElementById("pay-modal").classList.remove("open");
   }
-  function markPaid() {
+  async function markPaid() {
+    // Second guard: covers the case where the trial/access expires in the
+    // gap between opening the pay modal and clicking "I've paid".
+    if (!(await paywallAllows())) {
+      closePayModal();
+      return; // don't record the sale — access expired mid-checkout
+    }
     if (currentInvoice) {
       const items = Object.entries(cart).map(([id, qty]) => {
         const p = PRODUCTS.find((x) => x.id === id);
-        return { name: p.name, qty, price: p.price };
+        return { name: p.name, unit: p.unit, qty, price: p.price };
       });
-      billHistory.unshift({
+      const billEntry = {
         no: currentInvoice.no,
         date: currentInvoice.date,
         time: currentInvoice.time,
         total: totalAmount(),
         items,
-      });
+        deliveryMethod: null,
+      };
+      billHistory.unshift(billEntry);
       invoiceCounter++;
+      pendingDeliveryBill = billEntry;
     }
     for (const id of Object.keys(cart)) {
       delete cart[id];
@@ -1094,9 +1231,55 @@
     updateBadge();
     renderDrawer();
     closePayModal();
-    closeDrawer();
     saveState();
     showToast("Payment recorded.");
+    if (pendingDeliveryBill) {
+      document.getElementById("delivery-modal").classList.add("open");
+    } else {
+      closeDrawer();
+    }
+  }
+  // Builds the printable invoice and opens the browser print dialog. If no
+  // printer is connected, the dialog's own "Save as PDF" destination covers
+  // the fallback — nothing extra to wire up for that.
+  function printInvoice(billEntry) {
+    const rows = billEntry.items.map((it) => `
+      <tr>
+        <td>${it.name}${it.unit ? ` <span style="color:#888;">(${it.unit})</span>` : ""}</td>
+        <td>${it.qty}</td>
+        <td>₹${it.price}</td>
+        <td>₹${it.qty * it.price}</td>
+      </tr>`).join("");
+    document.getElementById("print-invoice").innerHTML = `
+      <h2>${SHOP_NAME}</h2>
+      <div class="pi-address">${SHOP_ADDRESS}<br>Mobile No: ${SHOP_MOBILE}</div>
+      <div class="pi-row"><span>Invoice No.</span><span>${billEntry.no}</span></div>
+      <div class="pi-row"><span>Date</span><span>${billEntry.date}</span></div>
+      <div class="pi-row"><span>Time</span><span>${billEntry.time}</span></div>
+      <table>
+        <thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="pi-total">Total: ₹${billEntry.total}</div>`;
+    // Chrome/Edge/Safari suggest the page <title> as the "Save as PDF"
+    // filename. Swap in a unique one (invoice no + date) for the duration
+    // of the print dialog so repeated saves don't collide/prompt to
+    // overwrite, then restore the normal tab title afterwards.
+    const originalTitle = document.title;
+    document.title = `${SHOP_NAME} - ${billEntry.no} - ${billEntry.date}`;
+    window.print();
+    document.title = originalTitle;
+  }
+
+  function chooseDelivery(method) {
+    if (pendingDeliveryBill) {
+      pendingDeliveryBill.deliveryMethod = method;
+      saveState();
+      printInvoice(pendingDeliveryBill);
+      pendingDeliveryBill = null;
+    }
+    document.getElementById("delivery-modal").classList.remove("open");
+    closeDrawer();
   }
   function copyUpi() {
     navigator.clipboard.writeText(UPI_ID);
@@ -1118,7 +1301,7 @@
     list.innerHTML = billHistory.map((h) => `
       <div class="history-item">
         <div class="h-top"><span>${h.no}</span><span>₹${h.total}</span></div>
-        <div class="h-sub">${h.date} · ${h.time} · ${h.items.length} item${h.items.length > 1 ? "s" : ""}</div>
+        <div class="h-sub">${h.date} · ${h.time} · ${h.items.length} item${h.items.length > 1 ? "s" : ""}${h.deliveryMethod ? " · " + h.deliveryMethod : ""}</div>
       </div>
     `).join("");
   }
@@ -1195,7 +1378,7 @@
     PRODUCTS.push({ id: slugify(name), name, unit, price, emoji, addedAt: nextAddedAt++ });
     closeAddItemModal();
     renderGrid();
-    saveState();
+    persistProducts();
     showToast(`${name} added.`);
   }
 
@@ -1214,7 +1397,7 @@
       h.items.forEach((it) => {
         billRows.push({
           "Invoice No": h.no, "Date": h.date, "Time": h.time,
-          "Item": it.name, "Qty": it.qty, "Price": it.price,
+          "Item": it.name, "Unit": it.unit || "", "Qty": it.qty, "Price": it.price,
           "Line Total": it.qty * it.price, "Bill Total": h.total,
         });
       });
@@ -1224,72 +1407,130 @@
 
     const wsMeta = XLSX.utils.json_to_sheet([{ invoiceCounter, nextAddedAt, exportedAt: new Date().toISOString() }]);
     XLSX.utils.book_append_sheet(wb, wsMeta, "Meta");
+
     const stamp = new Date().toISOString().slice(0, 10);
     const shopSlug = SHOP_NAME.replace(/\s*FreshMeat Shop\s*$/i, "").trim().replace(/\s+/g, "-");
     XLSX.writeFile(wb, `${shopSlug}-FreshMeat-Backup-${stamp}.xlsx`);
-   
     showToast("Backup downloaded.");
   }
 
-  function handleRestoreFile(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const data = new Uint8Array(e.target.result);
-        const wb = XLSX.read(data, { type: "array" });
+function handleRestoreFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const wb = XLSX.read(data, { type: "array" });
 
-        if (wb.SheetNames.includes("Products")) {
-          const rows = XLSX.utils.sheet_to_json(wb.Sheets["Products"]);
-          if (rows.length) {
-            PRODUCTS.length = 0;
-            rows.forEach((r) => PRODUCTS.push({
-              id: String(r.id), name: String(r.name), unit: String(r.unit),
-              price: Number(r.price) || 0, emoji: String(r.emoji || "🍽️"),
-              addedAt: Number(r.addedAt) || 0,
-            }));
-            nextAddedAt = Math.max(...PRODUCTS.map((p) => p.addedAt), 0) + 1;
-          }
+      // --- Peek at Meta sheet first to warn before overwriting anything ---
+      let exportedAt = null;
+      if (wb.SheetNames.includes("Meta")) {
+        const metaRows = XLSX.utils.sheet_to_json(wb.Sheets["Meta"]);
+        if (metaRows[0] && metaRows[0].exportedAt) {
+          exportedAt = new Date(metaRows[0].exportedAt);
         }
-
-        if (wb.SheetNames.includes("Bill History")) {
-          const rows = XLSX.utils.sheet_to_json(wb.Sheets["Bill History"]);
-          const grouped = {};
-          rows.forEach((r) => {
-            const no = r["Invoice No"];
-            if (!grouped[no]) {
-              grouped[no] = { no, date: r["Date"], time: r["Time"], total: Number(r["Bill Total"]) || 0, items: [] };
-            }
-            grouped[no].items.push({ name: r["Item"], qty: Number(r["Qty"]) || 0, price: Number(r["Price"]) || 0 });
-          });
-          billHistory = Object.values(grouped);
-        }
-
-        if (wb.SheetNames.includes("Meta")) {
-          const rows = XLSX.utils.sheet_to_json(wb.Sheets["Meta"]);
-          if (rows[0] && typeof rows[0].invoiceCounter === "number") invoiceCounter = rows[0].invoiceCounter;
-        }
-
-        saveState();
-        renderGrid();
-        showToast("Restored from backup.");
-      } catch (err) {
-        console.error(err);
-        showToast("Couldn't read that file. Is it a FreshMeat backup?");
-      } finally {
-        event.target.value = "";
       }
-    };
+
+      let warningMsg = "Restoring this backup will overwrite your current products, bill history, and invoice numbering on this device.";
+      if (exportedAt && !isNaN(exportedAt)) {
+        const daysOld = Math.floor((Date.now() - exportedAt.getTime()) / (1000 * 60 * 60 * 24));
+        const dateStr = exportedAt.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+        if (daysOld <= 0) {
+          warningMsg = `This backup was taken today (${dateStr}). Restoring will overwrite current data on this device.`;
+        } else {
+          warningMsg = `This backup is ${daysOld} day${daysOld > 1 ? "s" : ""} old (from ${dateStr}). Restoring will erase any bills, price changes, or new items added since then — this cannot be undone.`;
+        }
+      }
+
+      if (!confirm(warningMsg + "\n\nContinue with restore?")) {
+        event.target.value = "";
+        return;
+      }
+
+      if (wb.SheetNames.includes("Products")) {
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets["Products"]);
+        if (rows.length) {
+          PRODUCTS.length = 0;
+          rows.forEach((r) => PRODUCTS.push({
+            id: String(r.id), name: String(r.name), unit: String(r.unit),
+            price: Number(r.price) || 0, emoji: String(r.emoji || "🍽️"),
+            addedAt: Number(r.addedAt) || 0,
+          }));
+          nextAddedAt = Math.max(...PRODUCTS.map((p) => p.addedAt), 0) + 1;
+        }
+      }
+
+      if (wb.SheetNames.includes("Bill History")) {
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets["Bill History"]);
+        const grouped = {};
+        rows.forEach((r) => {
+          const no = r["Invoice No"];
+          if (!grouped[no]) {
+            grouped[no] = { no, date: r["Date"], time: r["Time"], total: Number(r["Bill Total"]) || 0, items: [] };
+          }
+          grouped[no].items.push({ name: r["Item"], qty: Number(r["Qty"]) || 0, price: Number(r["Price"]) || 0 });
+        });
+        billHistory = Object.values(grouped);
+      }
+
+      if (wb.SheetNames.includes("Meta")) {
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets["Meta"]);
+        if (rows[0] && typeof rows[0].invoiceCounter === "number") invoiceCounter = rows[0].invoiceCounter;
+      }
+
+      saveState();
+      renderGrid();
+            showToast(exportedAt ? `Restored backup from ${exportedAt.toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}.` : "Restored from backup.");
+    } catch (err) {
+      console.error(err);
+      showToast("Couldn't read that file. Is it a FreshMeat backup?");
+    } finally {
+      event.target.value = "";
+    }
+  };
     reader.readAsArrayBuffer(file);
-  }
+}
 
-  function init() {
-    loadState();
-    renderGrid();
+  async function loadSharedProducts() {
+  try {
+    const shared = await window.fetchSharedProducts();
+    if (shared && Array.isArray(shared.products) && shared.products.length) {
+      PRODUCTS.length = 0;
+      shared.products.forEach((p) => PRODUCTS.push(p));
+      if (typeof shared.nextAddedAt === "number") nextAddedAt = shared.nextAddedAt;
+    } else {
+      // First time ever for this shop — publish current defaults so Firestore has a doc to read next time.
+      await window.saveSharedProducts(PRODUCTS, nextAddedAt);
+    }
+  } catch (e) {
+    console.warn("Could not load shared prices, showing local defaults:", e);
   }
+}
 
-  init();
+async function persistProducts() {
+  try {
+    await window.saveSharedProducts(PRODUCTS, nextAddedAt);
+  } catch (e) {
+    console.warn("Could not save shared prices:", e);
+    showToast("Saved locally, but couldn't sync online. Check connection.");
+  }
+  saveState();
+}
+
+async function init() {
+  // Wait for the head module script to finish attaching window.fetchSharedProducts
+  let attempts = 0;
+  while (typeof window.fetchSharedProducts !== "function" && attempts < 50) {
+    await new Promise((r) => setTimeout(r, 50));
+    attempts++;
+  }
+  await loadSharedProducts();
+  loadState();
+  renderGrid();
+}
+
+init();
 
   document.getElementById("admin-password-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") submitAdminPassword();
@@ -1298,7 +1539,8 @@
     if (e.key === "Enter") submitNewItem();
   });
 </script>
-  
-<script type="module" src="freshmeat-paywall.js"></script>
+
+<div id="print-invoice"></div>
+
 </body>
 </html>
