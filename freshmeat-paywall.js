@@ -18,7 +18,7 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 // ---- Trial & Paywall Logic (Phone-verified, Firestore-backed) ----
-// TESTING MODE: 5-minute trial for customer4 only. Switch back to
+// TESTING MODE: 5-minute trial for customer1 only. Switch back to
 // TRIAL_HOURS = 2 (and revert isAccessAllowed + the verified-message text
 // below) once testing is done.
 const TRIAL_MINUTES = 5;
@@ -43,7 +43,7 @@ function setVerifiedPhone(phone) {
   localStorage.setItem("fm_verifiedPhone", phone);
 }
 
-// Each shop deployment (freshmeat-shop, freshmeat-customer4, etc.) sets its
+// Each shop deployment (freshmeat-shop, freshmeat-customer1, etc.) sets its
 // own window.SHOP_ID from its index.html's inline script. Trials are stored
 // under trials/{shopId}/phones/{phone} so a customer's trial on one shop is
 // completely independent from their trial on any other shop, even though
