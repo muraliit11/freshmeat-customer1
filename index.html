@@ -590,8 +590,8 @@
   const auth = getAuth(app);
   const db = getFirestore(app);
 
-  const ADMIN_EMAIL = "customer4@freshmeat.local";
-  const SHOP_ID = "customer4"; // unique per customer deployment — change this for customer1/2/3 later
+  const ADMIN_EMAIL = "customer1@freshmeat.local";
+  const SHOP_ID = "customer1"; // unique per customer deployment — change this for future customers
   window.SHOP_ID = SHOP_ID; // exposed for freshmeat-paywall.js so trials are scoped per shop
 
   window.firebaseAdminSignIn = async function (enteredPassword) {
