@@ -1,6 +1,4 @@
 
-
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -577,7 +575,11 @@
  <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
   import { getAuth, signInWithEmailAndPassword, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-  import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  import {
+    getFirestore, doc, getDoc, setDoc,
+    collection, query, orderBy, limit, getDocs,
+    runTransaction, writeBatch
+  } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyBFxIFfgtTYT8vb42rPIQ-eJClzm73xttw",
@@ -616,6 +618,50 @@
   window.saveSharedProducts = async function (productsArray, nextAddedAtValue) {
     const ref = doc(db, "shopProducts", SHOP_ID);
     await setDoc(ref, { products: productsArray, nextAddedAt: nextAddedAtValue, updatedAt: Date.now() });
+  };
+
+  // ---- Invoice numbering (Firestore-backed — atomic, so two checkouts on
+  // two different devices at the same time can never get the same number,
+  // and the counter survives across every browser/device rather than
+  // resetting each time someone logs in on a fresh session) ----
+  window.getNextInvoiceNumber = async function (shopId) {
+    const ref = doc(db, "shopMeta", shopId);
+    const nextValue = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(ref);
+      const current = snap.exists() && typeof snap.data().invoiceCounter === "number"
+        ? snap.data().invoiceCounter
+        : 0;
+      const next = current + 1;
+      tx.set(ref, { invoiceCounter: next }, { merge: true });
+      return next;
+    });
+    return nextValue;
+  };
+
+  // ---- Bill history (Firestore-backed — shared across every device the
+  // shop owner uses, instead of living only in one browser's localStorage) ----
+  window.saveBillToCloud = async function (shopId, billEntry) {
+    const ref = doc(collection(db, "shopBills", shopId, "invoices"), billEntry.no);
+    await setDoc(ref, { ...billEntry, savedAt: Date.now() });
+  };
+
+  window.fetchBillHistory = async function (shopId, take) {
+    const q = query(
+      collection(db, "shopBills", shopId, "invoices"),
+      orderBy("savedAt", "desc"),
+      limit(take || 200)
+    );
+    const snaps = await getDocs(q);
+    return snaps.docs.map((d) => d.data());
+  };
+
+  window.resetBillHistoryCloud = async function (shopId) {
+    const q = query(collection(db, "shopBills", shopId, "invoices"));
+    const snaps = await getDocs(q);
+    const batch = writeBatch(db);
+    snaps.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+    await setDoc(doc(db, "shopMeta", shopId), { invoiceCounter: 0 }, { merge: true });
   };
 </script>
 <script type="module" src="freshmeat-paywall.js"></script>
@@ -664,7 +710,7 @@
       <span id="drawer-total">₹0</span>
     </div>
     <button class="pay-btn" id="pay-trigger" onclick="openPayModal()" disabled>Proceed to pay</button>
-    <button class="history-link" onclick="openHistoryModal()">View bill history</button>
+    <button class="history-link" id="history-link-btn" onclick="openHistoryModal()" style="display:none;">View bill history</button>
   </div>
 </div>
 
@@ -747,7 +793,7 @@
 <div class="history-modal" id="history-modal">
   <div class="history-box">
     <h3>Bill history</h3>
-    <div class="history-note">Saved on this device — stays until you clear browser data.</div>
+    <div class="history-note">Synced from the cloud — same on every device.</div>
     <div class="history-list" id="history-list"></div>
     <button class="cancel-btn" onclick="closeHistoryModal()">Close</button>
   </div>
@@ -801,9 +847,15 @@
 
   let adminUnlocked = false;
   let nextAddedAt = Math.max(...PRODUCTS.map((p) => p.addedAt)) + 1;
+  // These two are now a LOCAL FALLBACK ONLY (used if Firestore is briefly
+  // unreachable). The real, shared source of truth for both invoice numbers
+  // and bill history lives in Firestore (see window.getNextInvoiceNumber,
+  // window.saveBillToCloud, window.fetchBillHistory above) so they stay
+  // consistent across every device/browser instead of resetting per-session.
   let invoiceCounter = 1;
-  let currentInvoice = null;
   let billHistory = [];
+  let currentInvoice = null;
+  let invoiceFetchInProgress = false;
   let pendingDeliveryBill = null; // the bill entry awaiting a Hand Carry / Courier choice
 
   // --- Persistence (localStorage: automatic, survives refresh on this browser) ---
@@ -814,8 +866,8 @@
       const state = {
         products: PRODUCTS,
         nextAddedAt,
-        billHistory,
-        invoiceCounter,
+        billHistory,      // local cache/fallback only — Firestore is the source of truth
+        invoiceCounter,   // local cache/fallback only — Firestore is the source of truth
         cart,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -845,12 +897,12 @@ function loadState() {
     return { date, time };
   }
 
-  function makeInvoiceNo(d) {
+  function makeInvoiceNo(d, seq) {
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, "0");
     const day = String(d.getDate()).padStart(2, "0");
-    const seq = String(invoiceCounter).padStart(3, "0");
-    return `INV-${y}${m}${day}-${seq}`;
+    const s = String(seq).padStart(3, "0");
+    return `INV-${y}${m}${day}-${s}`;
   }
 
   const cart = {};
@@ -903,6 +955,7 @@ function loadState() {
       document.getElementById("export-btn").style.display = "none";
       document.getElementById("restore-btn").style.display = "none";
       document.getElementById("reset-invoice-btn").style.display = "none";
+      document.getElementById("history-link-btn").style.display = "none";
       renderGrid();
       return;
     }
@@ -926,6 +979,7 @@ function loadState() {
       document.getElementById("export-btn").style.display = "inline-block";
       document.getElementById("restore-btn").style.display = "inline-block";
       document.getElementById("reset-invoice-btn").style.display = "inline-block";
+      document.getElementById("history-link-btn").style.display = "block";
       renderGrid();
       closeAdminModal();
     } catch (err) {
@@ -996,6 +1050,7 @@ function loadState() {
     }
     try {
       await window.firebaseAdminSignIn(entered);
+      await window.resetBillHistoryCloud(window.SHOP_ID);
       billHistory = [];
       invoiceCounter = 1;
       currentInvoice = null;
@@ -1004,7 +1059,9 @@ function loadState() {
       closeInvoiceResetModal();
       showToast("Invoice history reset. Numbering restarts at 001.");
     } catch (err) {
-      document.getElementById("invoice-reset-error").textContent = "Incorrect password.";
+      console.error(err);
+      document.getElementById("invoice-reset-error").textContent =
+        err && err.code === "auth/wrong-password" ? "Incorrect password." : "Incorrect password, or reset failed. Try again.";
     }
   }
 
@@ -1111,6 +1168,19 @@ function loadState() {
     }
   }
 
+  function billMetaHtml(invoice) {
+    return `
+      <div class="shop-name">${SHOP_NAME}</div>
+      <div class="shop-address">${SHOP_ADDRESS}<br>Mobile No: ${SHOP_MOBILE}</div>
+      <div class="row"><span>Invoice No.</span><span>${invoice.no}</span></div>
+      <div class="row"><span>Date</span><span>${invoice.date}</span></div>
+      <div class="row"><span>Time</span><span>${invoice.time}</span></div>`;
+  }
+
+  // Renders cart items/total synchronously as before. The invoice number
+  // is reserved from Firestore asynchronously — while that's in flight the
+  // bill-meta area shows a brief "Preparing invoice…" placeholder, then
+  // re-renders itself once the number comes back.
   function renderDrawer() {
     const body = document.getElementById("drawer-body");
     const entries = Object.entries(cart);
@@ -1135,22 +1205,39 @@ function loadState() {
     document.getElementById("pay-trigger").disabled = total === 0;
 
     const metaEl = document.getElementById("bill-meta");
+
     if (total === 0) {
       currentInvoice = null;
       metaEl.innerHTML = "";
-    } else {
-      if (!currentInvoice) {
-        const now = new Date();
-        const { date, time } = formatDateTime(now);
-        currentInvoice = { no: makeInvoiceNo(now), date, time, timestamp: now };
-      }
-      metaEl.innerHTML = `
-      <div class="shop-name">${SHOP_NAME}</div>
-        <div class="shop-address">${SHOP_ADDRESS}<br>Mobile No: ${SHOP_MOBILE}</div>
-        <div class="row"><span>Invoice No.</span><span>${currentInvoice.no}</span></div>
-        <div class="row"><span>Date</span><span>${currentInvoice.date}</span></div>
-        <div class="row"><span>Time</span><span>${currentInvoice.time}</span></div>`;
+      return;
     }
+
+    if (currentInvoice) {
+      metaEl.innerHTML = billMetaHtml(currentInvoice);
+      return;
+    }
+
+    if (invoiceFetchInProgress) return; // already fetching, that call will re-render when done
+
+    invoiceFetchInProgress = true;
+    metaEl.innerHTML = `<div class="shop-name">${SHOP_NAME}</div><div style="text-align:center;padding:8px 0;">Preparing invoice…</div>`;
+
+    (async () => {
+      const now = new Date();
+      const { date, time } = formatDateTime(now);
+      let seq;
+      try {
+        seq = await window.getNextInvoiceNumber(window.SHOP_ID);
+      } catch (e) {
+        console.warn("Could not reserve invoice number from Firestore, using local fallback:", e);
+        seq = invoiceCounter;
+        invoiceCounter++;
+      }
+      invoiceFetchInProgress = false;
+      if (totalAmount() === 0) return; // cart was emptied while we were fetching — discard
+      currentInvoice = { no: makeInvoiceNo(now, seq), date, time, timestamp: now };
+      renderDrawer();
+    })();
   }
 
   function openDrawer() {
@@ -1179,6 +1266,10 @@ function loadState() {
   async function openPayModal() {
     const total = totalAmount();
     if (total === 0) return;
+    if (!currentInvoice) {
+      showToast("Still preparing your invoice — one moment…");
+      return;
+    }
     if (!(await paywallAllows())) {
       return; // trial/access expired — paywall shown instead, checkout aborted
     }
@@ -1221,8 +1312,13 @@ function loadState() {
         items,
         deliveryMethod: null,
       };
-      billHistory.unshift(billEntry);
-      invoiceCounter++;
+      try {
+        await window.saveBillToCloud(window.SHOP_ID, billEntry);
+      } catch (e) {
+        console.warn("Could not save bill to Firestore, keeping it locally only:", e);
+        showToast("Payment recorded locally, but couldn't sync online. Check connection.");
+      }
+      billHistory.unshift(billEntry); // local cache for immediate display
       pendingDeliveryBill = billEntry;
     }
     for (const id of Object.keys(cart)) {
@@ -1276,6 +1372,10 @@ function loadState() {
   function chooseDelivery(method) {
     if (pendingDeliveryBill) {
       pendingDeliveryBill.deliveryMethod = method;
+      // Best-effort: also update the delivery method on the Firestore copy.
+      window.saveBillToCloud(window.SHOP_ID, pendingDeliveryBill).catch((e) =>
+        console.warn("Could not sync delivery method to Firestore:", e)
+      );
       saveState();
       printInvoice(pendingDeliveryBill);
       pendingDeliveryBill = null;
@@ -1287,9 +1387,16 @@ function loadState() {
     navigator.clipboard.writeText(UPI_ID);
   }
 
-  function openHistoryModal() {
-    renderHistoryList();
+  async function openHistoryModal() {
+    document.getElementById("history-list").innerHTML = `<div class="history-empty">Loading…</div>`;
     document.getElementById("history-modal").classList.add("open");
+    try {
+      billHistory = await window.fetchBillHistory(window.SHOP_ID);
+      saveState(); // refresh the local fallback cache too
+    } catch (e) {
+      console.warn("Could not fetch bill history from Firestore, showing local cache:", e);
+    }
+    renderHistoryList();
   }
   function closeHistoryModal() {
     document.getElementById("history-modal").classList.remove("open");
@@ -1297,7 +1404,7 @@ function loadState() {
   function renderHistoryList() {
     const list = document.getElementById("history-list");
     if (billHistory.length === 0) {
-      list.innerHTML = `<div class="history-empty">No paid bills yet this session.</div>`;
+      list.innerHTML = `<div class="history-empty">No paid bills yet.</div>`;
       return;
     }
     list.innerHTML = billHistory.map((h) => `
@@ -1385,7 +1492,15 @@ function loadState() {
   }
 
   // --- Excel export/restore (manual backup, or moving data to another device) ---
-  function exportToExcel() {
+  async function exportToExcel() {
+    // Pull the freshest bill history from Firestore before exporting, so the
+    // backup reflects sales from every device, not just this browser's cache.
+    try {
+      billHistory = await window.fetchBillHistory(window.SHOP_ID);
+    } catch (e) {
+      console.warn("Could not refresh bill history before export, using local cache:", e);
+    }
+
     const wb = XLSX.utils.book_new();
 
     const productRows = PRODUCTS.map((p) => ({
@@ -1434,14 +1549,14 @@ function handleRestoreFile(event) {
         }
       }
 
-      let warningMsg = "Restoring this backup will overwrite your current products, bill history, and invoice numbering on this device.";
+      let warningMsg = "Restoring this backup will overwrite your current products on this device (bill history and invoice numbering are cloud-synced and unaffected).";
       if (exportedAt && !isNaN(exportedAt)) {
         const daysOld = Math.floor((Date.now() - exportedAt.getTime()) / (1000 * 60 * 60 * 24));
         const dateStr = exportedAt.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
         if (daysOld <= 0) {
-          warningMsg = `This backup was taken today (${dateStr}). Restoring will overwrite current data on this device.`;
+          warningMsg = `This backup was taken today (${dateStr}). Restoring will overwrite current product data.`;
         } else {
-          warningMsg = `This backup is ${daysOld} day${daysOld > 1 ? "s" : ""} old (from ${dateStr}). Restoring will erase any bills, price changes, or new items added since then — this cannot be undone.`;
+          warningMsg = `This backup is ${daysOld} day${daysOld > 1 ? "s" : ""} old (from ${dateStr}). Restoring will overwrite any price changes or new items added since then — this cannot be undone.`;
         }
       }
 
@@ -1463,27 +1578,15 @@ function handleRestoreFile(event) {
         }
       }
 
-      if (wb.SheetNames.includes("Bill History")) {
-        const rows = XLSX.utils.sheet_to_json(wb.Sheets["Bill History"]);
-        const grouped = {};
-        rows.forEach((r) => {
-          const no = r["Invoice No"];
-          if (!grouped[no]) {
-            grouped[no] = { no, date: r["Date"], time: r["Time"], total: Number(r["Bill Total"]) || 0, items: [] };
-          }
-          grouped[no].items.push({ name: r["Item"], qty: Number(r["Qty"]) || 0, price: Number(r["Price"]) || 0 });
-        });
-        billHistory = Object.values(grouped);
-      }
-
-      if (wb.SheetNames.includes("Meta")) {
-        const rows = XLSX.utils.sheet_to_json(wb.Sheets["Meta"]);
-        if (rows[0] && typeof rows[0].invoiceCounter === "number") invoiceCounter = rows[0].invoiceCounter;
-      }
+      // Note: Bill History / invoice numbering are no longer restored from
+      // the spreadsheet — they're cloud-synced and shouldn't be overwritten
+      // by an old local backup. The sheet is still exported for your own
+      // records, just not re-imported.
 
       saveState();
       renderGrid();
-            showToast(exportedAt ? `Restored backup from ${exportedAt.toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}.` : "Restored from backup.");
+      persistProducts();
+      showToast(exportedAt ? `Restored product backup from ${exportedAt.toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}.` : "Products restored from backup.");
     } catch (err) {
       console.error(err);
       showToast("Couldn't read that file. Is it a FreshMeat backup?");
