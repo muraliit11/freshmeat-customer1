@@ -571,6 +571,25 @@
     text-align: left;
   }
   .reset-checkbox-row input { margin-top: 2px; }
+  @media (max-width: 480px) {
+  .header-inner {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 14px 16px;
+  }
+  .logo {
+    width: 100%;
+  }
+  .logo span.tag {
+    display: block;
+    margin-left: 0;
+    margin-top: 2px;
+  }
+  .header-inner > div:last-child {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
 </style>
  <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
